@@ -1,0 +1,68 @@
+{
+  "selected_model": "logistic_regression",
+  "accuracy": 0.8688524590163934,
+  "precision": 0.8125,
+  "recall": 0.9285714285714286,
+  "f1": 0.8666666666666667,
+  "roc_auc": 0.9502164502164503,
+  "cv": {
+    "accuracy": 0.8139455782312925,
+    "precision": 0.8153732797466813,
+    "recall": 0.773913043478261,
+    "roc_auc": 0.8963053050009572
+  },
+  "classification_report": {
+    "0": {
+      "precision": 0.9310344827586207,
+      "recall": 0.8181818181818182,
+      "f1-score": 0.8709677419354839,
+      "support": 33.0
+    },
+    "1": {
+      "precision": 0.8125,
+      "recall": 0.9285714285714286,
+      "f1-score": 0.8666666666666667,
+      "support": 28.0
+    },
+    "accuracy": 0.8688524590163934,
+    "macro avg": {
+      "precision": 0.8717672413793103,
+      "recall": 0.8733766233766234,
+      "f1-score": 0.8688172043010753,
+      "support": 61.0
+    },
+    "weighted avg": {
+      "precision": 0.8766252119841718,
+      "recall": 0.8688524590163934,
+      "f1-score": 0.8689934778776661,
+      "support": 61.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      27,
+      6
+    ],
+    [
+      2,
+      26
+    ]
+  ],
+  "test_rows": 61,
+  "feature_names": [
+    "age",
+    "sex",
+    "cp",
+    "trestbps",
+    "chol",
+    "fbs",
+    "restecg",
+    "thalach",
+    "exang",
+    "oldpeak",
+    "slope",
+    "ca",
+    "thal"
+  ],
+  "note": "Educational dataset benchmark; not a medical diagnostic system."
+}
