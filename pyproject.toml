@@ -1,0 +1,12 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "mlruns", "models", "reports"]
+
+[tool.ruff.lint]
+select = ["F"]
