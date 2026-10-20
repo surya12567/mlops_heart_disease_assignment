@@ -288,7 +288,10 @@ def train(
             mlflow.sklearn.log_model(
     sk_model=fitted,
     name="model",
-    skops_trusted_types=["numpy.dtype"],
+    skops_trusted_types=[
+        "numpy.dtype",
+        "sklearn.tree._tree.Tree",
+    ],
 )
 
             results[name] = {
