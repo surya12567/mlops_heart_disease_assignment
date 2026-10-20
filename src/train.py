@@ -286,9 +286,10 @@ def train(
 
             # Use the current MLflow model-logging API.
             mlflow.sklearn.log_model(
-                sk_model=fitted,
-                name="model",
-            )
+    sk_model=fitted,
+    name="model",
+    skops_trusted_types=["numpy.dtype"],
+)
 
             results[name] = {
                 "metrics": metrics,
