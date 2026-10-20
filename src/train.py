@@ -4,20 +4,24 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import warnings
 from pathlib import Path
 
+import joblib
 import matplotlib
+
 matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import mlflow
 import mlflow.sklearn
 import numpy as np
 from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
+    RocCurveDisplay,
     accuracy_score,
     classification_report,
     confusion_matrix,
@@ -25,7 +29,6 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_auc_score,
-    RocCurveDisplay,
 )
 from sklearn.model_selection import (
     GridSearchCV,
@@ -35,8 +38,6 @@ from sklearn.model_selection import (
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier
-import joblib
 
 from src.data import DATA_PATH, load_dataset
 
@@ -47,46 +48,86 @@ FIG_DIR = REPORT_DIR / "figures"
 RANDOM_STATE = 42
 
 
-def build_preprocessor(feature_names: list[str]) -> ColumnTransformer:
-    numeric_pipe = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-    ])
-    return ColumnTransformer([
-        ("numeric", numeric_pipe, feature_names)
-    ], remainder="drop")
+def configure_mlflow() -> None:
+    """Configure MLflow to use a SQLite tracking database."""
+    database_path = (ROOT / "mlflow.db").resolve()
+    tracking_uri = f"sqlite:///{database_path.as_posix()}"
+
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment("uci-heart-disease-classification")
 
 
-def make_models(feature_names: list[str]) -> dict[str, Pipeline]:
+def build_preprocessor(
+    feature_names: list[str],
+) -> ColumnTransformer:
+    numeric_pipe = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    )
+
+    return ColumnTransformer(
+        transformers=[
+            ("numeric", numeric_pipe, feature_names),
+        ],
+        remainder="drop",
+    )
+
+
+def make_models(
+    feature_names: list[str],
+) -> dict[str, Pipeline]:
     return {
-        "logistic_regression": Pipeline([
-            ("preprocess", build_preprocessor(feature_names)),
-            ("model", LogisticRegression(
-                max_iter=2000,
-                class_weight="balanced",
-                random_state=RANDOM_STATE,
-            )),
-        ]),
-        "random_forest": Pipeline([
-            ("preprocess", build_preprocessor(feature_names)),
-            ("model", RandomForestClassifier(
-                n_estimators=300,
-                class_weight="balanced",
-                random_state=RANDOM_STATE,
-                n_jobs=-1,
-            )),
-        ]),
+        "logistic_regression": Pipeline(
+            steps=[
+                (
+                    "preprocess",
+                    build_preprocessor(feature_names),
+                ),
+                (
+                    "model",
+                    LogisticRegression(
+                        max_iter=2000,
+                        class_weight="balanced",
+                        random_state=RANDOM_STATE,
+                    ),
+                ),
+            ]
+        ),
+        "random_forest": Pipeline(
+            steps=[
+                (
+                    "preprocess",
+                    build_preprocessor(feature_names),
+                ),
+                (
+                    "model",
+                    RandomForestClassifier(
+                        n_estimators=300,
+                        class_weight="balanced",
+                        random_state=RANDOM_STATE,
+                        n_jobs=-1,
+                    ),
+                ),
+            ]
+        ),
     }
 
 
-def _safe_auc(y_true, probability) -> float:
+def safe_auc(y_true, probability) -> float:
+    """Calculate ROC-AUC safely."""
     try:
         return float(roc_auc_score(y_true, probability))
     except ValueError:
         return float("nan")
 
 
-def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
+def train(
+    data_path: Path = DATA_PATH,
+    tune: bool = True,
+) -> dict:
+    """Train and evaluate models, then save the best model and reports."""
     frame = load_dataset(data_path)
     frame = frame.dropna(subset=["target"]).copy()
     frame["target"] = frame["target"].astype(int)
@@ -100,7 +141,7 @@ def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
     if y.value_counts().min() < 5:
         warnings.warn(
             "A target class has fewer than 5 rows; "
-            "5-fold CV may be unreliable."
+            "5-fold cross-validation may be unreliable."
         )
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -128,11 +169,8 @@ def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # MLflow compatibility for its legacy file-based tracking backend.
-    os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
-
-    mlflow.set_tracking_uri((ROOT / "mlruns").as_uri())
-    mlflow.set_experiment("uci-heart-disease-classification")
+    # Configure MLflow before creating or starting any runs.
+    configure_mlflow()
 
     results = {}
     fitted_models = {}
@@ -155,17 +193,22 @@ def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
             )
 
             cv_summary = {
-                metric: float(np.mean(cv_scores[f"test_{metric}"]))
+                metric: float(
+                    np.mean(cv_scores[f"test_{metric}"])
+                )
                 for metric in scoring
             }
 
             for metric, value in cv_summary.items():
-                mlflow.log_metric(f"cv_{metric}_mean", value)
+                mlflow.log_metric(
+                    f"cv_{metric}_mean",
+                    value,
+                )
 
             if tune and name == "random_forest":
                 search = GridSearchCV(
-                    pipeline,
-                    {
+                    estimator=pipeline,
+                    param_grid={
                         "model__max_depth": [None, 4, 8],
                         "model__min_samples_leaf": [1, 2, 4],
                     },
@@ -174,13 +217,17 @@ def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
                     n_jobs=-1,
                     refit=True,
                 )
+
                 search.fit(X_train, y_train)
                 fitted = search.best_estimator_
 
-                mlflow.log_params({
-                    f"best_{k}": v
-                    for k, v in search.best_params_.items()
-                })
+                mlflow.log_params(
+                    {
+                        f"best_{key}": value
+                        for key, value
+                        in search.best_params_.items()
+                    }
+                )
                 mlflow.log_metric(
                     "tuned_cv_roc_auc",
                     float(search.best_score_),
@@ -188,29 +235,60 @@ def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
             else:
                 fitted = pipeline.fit(X_train, y_train)
 
-            pred = fitted.predict(X_test)
-            proba = fitted.predict_proba(X_test)[:, 1]
+            predictions = fitted.predict(X_test)
+            probabilities = fitted.predict_proba(X_test)[:, 1]
 
             metrics = {
-                "accuracy": float(accuracy_score(y_test, pred)),
+                "accuracy": float(
+                    accuracy_score(y_test, predictions)
+                ),
                 "precision": float(
-                    precision_score(y_test, pred, zero_division=0)
+                    precision_score(
+                        y_test,
+                        predictions,
+                        zero_division=0,
+                    )
                 ),
                 "recall": float(
-                    recall_score(y_test, pred, zero_division=0)
+                    recall_score(
+                        y_test,
+                        predictions,
+                        zero_division=0,
+                    )
                 ),
-                "f1": float(f1_score(y_test, pred, zero_division=0)),
-                "roc_auc": _safe_auc(y_test, proba),
+                "f1": float(
+                    f1_score(
+                        y_test,
+                        predictions,
+                        zero_division=0,
+                    )
+                ),
+                "roc_auc": safe_auc(y_test, probabilities),
                 "cv": cv_summary,
             }
 
-            for key in [
-                "accuracy", "precision", "recall", "f1", "roc_auc"
-            ]:
-                mlflow.log_metric(f"test_{key}", metrics[key])
+            for metric_name in (
+                "accuracy",
+                "precision",
+                "recall",
+                "f1",
+                "roc_auc",
+            ):
+                mlflow.log_metric(
+                    f"test_{metric_name}",
+                    metrics[metric_name],
+                )
 
-            mlflow.log_dict(metrics, f"{name}_metrics.json")
-            mlflow.sklearn.log_model(fitted, artifact_path="model")
+            mlflow.log_dict(
+                metrics,
+                f"{name}_metrics.json",
+            )
+
+            # Use the current MLflow model-logging API.
+            mlflow.sklearn.log_model(
+                sk_model=fitted,
+                name="model",
+            )
 
             results[name] = {
                 "metrics": metrics,
@@ -218,31 +296,35 @@ def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
             }
             fitted_models[name] = fitted
 
+    # Select the model with the highest mean cross-validation ROC-AUC.
     best_name = max(
         results,
-        key=lambda n: results[n]["metrics"]["cv"]["roc_auc"],
+        key=lambda model_name: (
+            results[model_name]["metrics"]["cv"]["roc_auc"]
+        ),
     )
-    best_model = fitted_models[best_name]
 
-    best_pred = best_model.predict(X_test)
-    best_proba = best_model.predict_proba(X_test)[:, 1]
+    best_model = fitted_models[best_name]
+    best_predictions = best_model.predict(X_test)
+    best_probabilities = best_model.predict_proba(X_test)[:, 1]
 
     final_metrics = {
         "selected_model": best_name,
         **{
-            k: v
-            for k, v in results[best_name]["metrics"].items()
-            if k != "cv"
+            key: value
+            for key, value in results[best_name]["metrics"].items()
+            if key != "cv"
         },
         "cv": results[best_name]["metrics"]["cv"],
         "classification_report": classification_report(
             y_test,
-            best_pred,
+            best_predictions,
             output_dict=True,
             zero_division=0,
         ),
         "confusion_matrix": confusion_matrix(
-            y_test, best_pred
+            y_test,
+            best_predictions,
         ).tolist(),
         "test_rows": int(len(y_test)),
         "feature_names": list(X.columns),
@@ -252,6 +334,7 @@ def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
         ),
     }
 
+    # Save the selected model and metadata.
     joblib.dump(
         best_model,
         MODEL_DIR / "heart_disease_pipeline.joblib",
@@ -268,52 +351,85 @@ def train(data_path: Path = DATA_PATH, tune: bool = True) -> dict:
     }
 
     (MODEL_DIR / "model_metadata.json").write_text(
-        json.dumps(metadata, indent=2)
-    )
-    (REPORT_DIR / "metrics.json").write_text(
-        json.dumps(final_metrics, indent=2)
-    )
-    (REPORT_DIR / "cv_results.json").write_text(
-        json.dumps(results, indent=2)
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
     )
 
+    (REPORT_DIR / "metrics.json").write_text(
+        json.dumps(final_metrics, indent=2),
+        encoding="utf-8",
+    )
+
+    (REPORT_DIR / "cv_results.json").write_text(
+        json.dumps(results, indent=2),
+        encoding="utf-8",
+    )
+
+    # Save the ROC curve.
     fig, ax = plt.subplots(figsize=(7, 6))
-    RocCurveDisplay.from_predictions(y_test, best_proba, ax=ax)
-    ax.set_title(f"ROC curve — {best_name}")
+    RocCurveDisplay.from_predictions(
+        y_test,
+        best_probabilities,
+        ax=ax,
+    )
+    ax.set_title(f"ROC curve - {best_name}")
     fig.tight_layout()
-    fig.savefig(FIG_DIR / "roc_curve.png", dpi=160)
+    fig.savefig(
+        FIG_DIR / "roc_curve.png",
+        dpi=160,
+    )
     plt.close(fig)
 
-    cm = confusion_matrix(y_test, best_pred)
+    # Save the confusion matrix.
+    matrix = confusion_matrix(y_test, best_predictions)
+
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.imshow(cm)
-    ax.set_title(f"Confusion matrix — {best_name}")
+    ax.imshow(matrix)
+    ax.set_title(f"Confusion matrix - {best_name}")
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Actual")
 
-    for (i, j), value in np.ndenumerate(cm):
-        ax.text(j, i, str(value), ha="center", va="center")
+    for (row, column), value in np.ndenumerate(matrix):
+        ax.text(
+            column,
+            row,
+            str(value),
+            ha="center",
+            va="center",
+        )
 
     fig.tight_layout()
-    fig.savefig(FIG_DIR / "confusion_matrix.png", dpi=160)
+    fig.savefig(
+        FIG_DIR / "confusion_matrix.png",
+        dpi=160,
+    )
     plt.close(fig)
 
     print(json.dumps(final_metrics, indent=2))
     print(
-        f"Saved model: "
+        "Saved model: "
         f"{MODEL_DIR / 'heart_disease_pipeline.joblib'}"
     )
+    print(f"MLflow database: {ROOT / 'mlflow.db'}")
 
     return final_metrics
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=Path, default=DATA_PATH)
+    parser = argparse.ArgumentParser(
+        description="Train and evaluate heart disease classifiers."
+    )
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=DATA_PATH,
+        help="Path to the input dataset.",
+    )
     parser.add_argument(
         "--no-tune",
         action="store_true",
-        help="Skip Random Forest grid search",
+        help="Skip Random Forest grid search.",
     )
+
     args = parser.parse_args()
     train(args.data, tune=not args.no_tune)
