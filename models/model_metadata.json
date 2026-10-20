@@ -1,0 +1,21 @@
+{
+  "selected_model": "logistic_regression",
+  "feature_names": [
+    "age",
+    "sex",
+    "cp",
+    "trestbps",
+    "chol",
+    "fbs",
+    "restecg",
+    "thalach",
+    "exang",
+    "oldpeak",
+    "slope",
+    "ca",
+    "thal"
+  ],
+  "target": "target",
+  "positive_class_meaning": "UCI target > 0 (presence of heart disease)",
+  "random_state": 42
+}
